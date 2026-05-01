@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+.env
+.env.*
+.pytest_cache/
+
+# Streamlit
+.streamlit/
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
+*.userprefs
+*.pyproj
+*.ipynb_checkpoints
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime files
+*.log
+
+offline_data/
