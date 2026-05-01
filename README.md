@@ -22,22 +22,50 @@ A Streamlit app that converts any YouTube URL into:
 
 ## Run locally
 
-1. Install dependencies:
+1. Activate the project virtual environment:
 
-   ```bash
+   ```powershell
+   .venv\Scripts\Activate.ps1
+   ```
+
+2. Install dependencies inside the virtual environment:
+
+   ```powershell
    pip install -r requirements.txt
    ```
 
-2. Start the app:
+3. Start the app:
 
-   ```bash
+   ```powershell
    streamlit run streamlit_app.py
    ```
 
-3. Make sure Ollama is installed and the `llama3.2:3b` model is available.
+4. Open the app in the browser:
+
+   ```text
+   http://localhost:8501
+   ```
+
+## Ollama setup
+
+- Make sure Ollama is installed locally and running.
+- Ensure the model `llama3.2:3b` is available:
+
+  ```powershell
+  ollama list
+  ```
+
+- The app sends prompts to Ollama through its local REST API at `http://localhost:11434`.
+
+## Features
+
+- YouTube URL → transcript extraction
+- chapter-by-chapter summaries
+- key takeaways
+- interactive Q&A using transcript retrieval and chapter context
 
 ## Notes
 
 - No OpenAI API key is required.
 - The app uses a chained pipeline: transcript extraction → chapter summaries → Q&A.
-- For a single video, the transcript chunks are retrieved directly without FAISS.
+- For a single video, transcript chunks are used directly without FAISS.

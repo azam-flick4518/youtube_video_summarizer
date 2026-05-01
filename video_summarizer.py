@@ -1,6 +1,7 @@
 import re
 import subprocess
 import textwrap
+import requests
 from collections import Counter
 from typing import List, Dict, Optional
 
@@ -23,16 +24,22 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def load_transcript(video_id: str) -> List[Dict]:
-    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "en-US", "en-GB"])
+    transcript = YouTubeTranscriptApi().fetch(video_id, languages=["en", "en-US", "en-GB"], preserve_formatting=False)
     return transcript
+
+
+def _transcript_field(item, field: str):
+    if isinstance(item, dict):
+        return item[field]
+    return getattr(item, field)
 
 
 def format_transcript(transcript: List[Dict]) -> str:
     lines = []
     for item in transcript:
-        start = int(item["start"])
+        start = int(_transcript_field(item, "start"))
         timestamp = f"[{start // 60:02d}:{start % 60:02d}]"
-        text = item["text"].replace("\n", " ")
+        text = _transcript_field(item, "text").replace("\n", " ")
         lines.append(f"{timestamp} {text}")
     return "\n".join(lines)
 
@@ -41,12 +48,13 @@ def chunk_transcript(transcript: List[Dict], max_chars: int = 2800) -> List[Dict
     chunks = []
     current_text = []
     current_length = 0
-    current_start = transcript[0]["start"] if transcript else 0
+    current_start = int(_transcript_field(transcript[0], "start")) if transcript else 0
     current_end = current_start
 
     for item in transcript:
-        sentence = item["text"].replace("\n", " ")
-        token = f"[{int(item['start']) // 60:02d}:{int(item['start']) % 60:02d}] {sentence}"
+        sentence = _transcript_field(item, "text").replace("\n", " ")
+        start = int(_transcript_field(item, "start"))
+        token = f"[{start // 60:02d}:{start % 60:02d}] {sentence}"
         if current_length + len(token) > max_chars and current_text:
             chunks.append({
                 "text": "\n".join(current_text),
@@ -55,10 +63,10 @@ def chunk_transcript(transcript: List[Dict], max_chars: int = 2800) -> List[Dict
             })
             current_text = []
             current_length = 0
-            current_start = item["start"]
+            current_start = start
         current_text.append(token)
         current_length += len(token)
-        current_end = item["start"]
+        current_end = start
 
     if current_text:
         chunks.append({
@@ -70,27 +78,25 @@ def chunk_transcript(transcript: List[Dict], max_chars: int = 2800) -> List[Dict
 
 
 def _ollama_command(model: str, prompt: str, temperature: float = 0.2, max_tokens: int = 1024) -> str:
-    command = [
-        "ollama",
-        "generate",
-        model,
-        "--temperature",
-        str(temperature),
-        "--max-tokens",
-        str(max_tokens),
-    ]
-    process = subprocess.run(
-        command,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if process.returncode != 0:
-        raise RuntimeError(
-            f"Ollama generation failed: {process.stderr.strip() or process.stdout.strip()}"
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "stream": False,
+            },
+            timeout=60,
         )
-    return process.stdout.strip()
+        response.raise_for_status()
+        result = response.json()
+        return result.get("response", "").strip()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Ollama API request failed: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Ollama generation failed: {e}")
 
 
 def summarize_chunk(chunk_text: str, model: str = "llama3.2:3b") -> Dict[str, str]:
