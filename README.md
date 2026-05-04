@@ -6,6 +6,15 @@ A Streamlit app that converts any YouTube URL into:
 - key takeaways
 - an interactive Q&A assistant
 
+## Project Structure
+
+```
+README.md              # This file
+requirements.txt       # Python dependencies
+streamlit_app.py       # Main Streamlit application
+video_summarizer.py    # Core summarization and Q&A logic
+```
+
 ## Tech stack
 
 - `youtube-transcript-api` for free transcript extraction
