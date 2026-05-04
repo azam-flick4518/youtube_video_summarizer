@@ -15,6 +15,9 @@ streamlit_app.py       # Main Streamlit application
 video_summarizer.py    # Core summarization and Q&A logic
 ```
 
+## Screenshots
+![App demo](assets/screenshot.png)
+
 ## Tech stack
 
 - `youtube-transcript-api` for free transcript extraction
@@ -28,6 +31,36 @@ video_summarizer.py    # Core summarization and Q&A logic
 3. Split the transcript into chunks and summarize each chapter.
 4. Generate key takeaways from chapter summaries.
 5. Answer user questions using transcript chunks and chapter context.
+
+Architecture and Design Decisions
+
+Pipeline overview
+
+YouTube URL
+    │
+    ▼
+extract_video_id()         # regex-based ID parsing, handles full URLs + short URLs + raw IDs
+    │
+    ▼
+load_transcript()          # youtube-transcript-api, English variants with graceful error handling
+    │
+    ▼
+chunk_transcript()         # character-budget chunking (~2800 chars), preserves timestamps
+    │
+    ▼
+summarize_transcript()     # per-chunk LLM call → title + summary extraction via regex
+    │
+    ▼
+build_takeaways()          # single LLM call over all chapter summaries → takeaways + suggested questions
+    │
+    ▼
+Streamlit UI               # tabs: Summary / Takeaways / Q&A / Transcript
+    │
+    ▼ (on user question)
+select_context_chunks()    # semantic retrieval via nomic-embed-text + cosine similarity
+    │
+    ▼
+answer_question()          # LLM call grounded on top-k chunks + chapter summaries
 
 ## Run locally
 
