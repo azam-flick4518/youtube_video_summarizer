@@ -66,7 +66,7 @@ def main():
             summary_data = build_takeaways(st.session_state.chapter_summaries, model=MODEL_NAME)
             st.session_state.takeaways = summary_data["takeaways"]
             st.session_state.suggested_questions = summary_data["questions"]
-            st.session_state.video_title = video_id
+            st.session_state.video_title = f"Video: {video_id}"
             st.session_state.qa_history = []
         except ValueError as exc:
             st.error(str(exc))

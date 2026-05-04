@@ -166,29 +166,37 @@ def build_takeaways(chapters: List[Dict[str, str]], model: str = "llama3.2:3b") 
     }
 
 
-def _score_chunk(chunk_text: str, question: str) -> int:
-    question_tokens = re.findall(r"\w+", question.lower())
-    chunk_tokens = re.findall(r"\w+", chunk_text.lower())
-    chunk_counts = Counter(chunk_tokens)
+def _get_embedding(text: str, model: str = "nomic-embed-text") -> List[float]:
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/embeddings",
+            json={"model": model, "prompt": text},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["embedding"]
+    except Exception as e:
+        raise RuntimeError(f"Embedding request failed: {e}")
 
-    overlap_score = sum(chunk_counts[token] for token in question_tokens if token in chunk_counts)
-    unique_overlap = len(set(question_tokens) & set(chunk_tokens))
-    question_length = max(len(question_tokens), 1)
-    density = overlap_score / question_length
 
-    return int(overlap_score + 2 * unique_overlap + density * 3)
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    import numpy as np
+    a, b = np.array(a), np.array(b)
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def select_context_chunks(chunks: List[Dict], question: str, top_k: int = 3) -> List[Dict]:
+    question_embedding = _get_embedding(question)
     scored = []
     for chunk in chunks:
-        score = _score_chunk(chunk["text"], question)
+        chunk_embedding = _get_embedding(chunk["text"])
+        score = _cosine_similarity(question_embedding, chunk_embedding)
         scored.append((score, chunk))
     scored.sort(key=lambda item: item[0], reverse=True)
-    selected = [chunk for score, chunk in scored[:top_k] if score > 0]
-    if not selected and chunks:
-        selected = [chunks[0]]
-    return selected
+    return [chunk for score, chunk in scored[:top_k]]
 
 
 def answer_question(question: str, transcript_chunks: List[Dict], chapter_summaries: List[Dict], model: str = "llama3.2:3b") -> str:
