@@ -3,6 +3,7 @@ from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisable
 
 from video_summarizer import (
     answer_question,
+    build_chunk_embeddings,
     build_takeaways,
     chunk_transcript,
     extract_video_id,
@@ -18,6 +19,8 @@ MODEL_NAME = "llama3.2:3b"
 def init_state():
     if "transcript_chunks" not in st.session_state:
         st.session_state.transcript_chunks = []
+    if "chunk_embeddings" not in st.session_state:
+        st.session_state.chunk_embeddings = []
     if "chapter_summaries" not in st.session_state:
         st.session_state.chapter_summaries = []
     if "video_title" not in st.session_state:
@@ -35,14 +38,15 @@ def init_state():
 def main():
     st.set_page_config(
         page_title="YouTube Video Summarizer + Q&A",
-        page_icon="🎬",
+        page_icon=":movie_camera:",
         layout="wide",
     )
     init_state()
 
     st.title("YouTube Video Summarizer + Q&A")
     st.write(
-        "Upload a YouTube URL, fetch the transcript, and get chapter-by-chapter summaries, key takeaways, plus an interactive Q&A mode powered by Ollama."
+        "Upload a YouTube URL, fetch the transcript, and get chapter-by-chapter summaries, "
+        "key takeaways, plus an interactive Q&A mode powered by Ollama."
     )
 
     with st.form("video_form"):
@@ -62,7 +66,11 @@ def main():
 
             st.session_state.transcript_text = format_transcript(transcript)
             st.session_state.transcript_chunks = chunk_transcript(transcript)
-            st.session_state.chapter_summaries = summarize_transcript(st.session_state.transcript_chunks, model=MODEL_NAME)
+            st.session_state.chapter_summaries = summarize_transcript(
+                st.session_state.transcript_chunks,
+                model=MODEL_NAME,
+            )
+            st.session_state.chunk_embeddings = build_chunk_embeddings(st.session_state.transcript_chunks)
             summary_data = build_takeaways(st.session_state.chapter_summaries, model=MODEL_NAME)
             st.session_state.takeaways = summary_data["takeaways"]
             st.session_state.suggested_questions = summary_data["questions"]
@@ -83,7 +91,10 @@ def main():
         with tabs[0]:
             st.markdown("### Chapter-by-chapter summary")
             for chapter in st.session_state.chapter_summaries:
-                label = f"{chapter['chapter_index']}. {chapter['title']} ({timeline_label(chapter['start'])} - {timeline_label(chapter['end'])})"
+                label = (
+                    f"{chapter['chapter_index']}. {chapter['title']} "
+                    f"({timeline_label(chapter['start'])} - {timeline_label(chapter['end'])})"
+                )
                 with st.expander(label, expanded=False):
                     st.write(chapter["summary"])
                     if chapter.get("raw"):
@@ -106,7 +117,13 @@ def main():
                     st.warning("Ask something about the video first.")
                 else:
                     try:
-                        answer = answer_question(question, st.session_state.transcript_chunks, st.session_state.chapter_summaries, model=MODEL_NAME)
+                        answer = answer_question(
+                            question,
+                            st.session_state.transcript_chunks,
+                            st.session_state.chapter_summaries,
+                            model=MODEL_NAME,
+                            chunk_embeddings=st.session_state.chunk_embeddings,
+                        )
                         st.session_state.qa_history.insert(0, {"question": question, "answer": answer})
                     except Exception as exc:
                         st.error(f"Q&A failed: {exc}")
@@ -122,7 +139,8 @@ def main():
         with tabs[3]:
             st.markdown("### Transcript preview")
             with st.expander("Show transcript preview", expanded=True):
-                st.code(st.session_state.transcript_text[:12000] + ("..." if len(st.session_state.transcript_text) > 12000 else ""))
+                preview = st.session_state.transcript_text[:12000]
+                st.code(preview + ("..." if len(st.session_state.transcript_text) > 12000 else ""))
 
         st.caption("Model: llama3.2:3b via Ollama. No OpenAI API required.")
 

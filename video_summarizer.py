@@ -1,20 +1,47 @@
 import re
-import subprocess
 import textwrap
 import requests
-from collections import Counter
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
 
 def extract_video_id(url_or_id: str) -> str:
     url_or_id = url_or_id.strip()
+    raw_id_match = re.fullmatch(r"[A-Za-z0-9_-]{11}", url_or_id)
+    if raw_id_match:
+        return raw_id_match.group(0)
+
+    parse_target = url_or_id
+    if "://" not in parse_target and (
+        parse_target.startswith("www.youtube.com")
+        or parse_target.startswith("youtube.com")
+        or parse_target.startswith("youtu.be")
+    ):
+        parse_target = f"https://{parse_target}"
+
+    parsed = urlparse(parse_target)
+    host = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    if _is_youtube_host(host) and parsed.path == "/watch":
+        video_ids = parse_qs(parsed.query).get("v", [])
+        if video_ids and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_ids[0]):
+            return video_ids[0]
+
+    if _is_youtube_host(host) and len(path_parts) >= 2 and path_parts[0] in {"embed", "shorts"}:
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", path_parts[1]):
+            return path_parts[1]
+
+    if host == "youtu.be" and path_parts and re.fullmatch(r"[A-Za-z0-9_-]{11}", path_parts[0]):
+        return path_parts[0]
+
     patterns = [
         r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([A-Za-z0-9_-]{11})",
         r"(?:https?://)?(?:www\.)?youtube\.com/embed/([A-Za-z0-9_-]{11})",
+        r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([A-Za-z0-9_-]{11})",
         r"(?:https?://)?youtu\.be/([A-Za-z0-9_-]{11})",
-        r"^([A-Za-z0-9_-]{11})$",
     ]
     for pattern in patterns:
         match = re.search(pattern, url_or_id)
@@ -32,6 +59,16 @@ def _transcript_field(item, field: str):
     if isinstance(item, dict):
         return item[field]
     return getattr(item, field)
+
+
+def _transcript_field_or_default(item, field: str, default: float = 0) -> float:
+    if isinstance(item, dict):
+        return item.get(field, default)
+    return getattr(item, field, default)
+
+
+def _is_youtube_host(host: str) -> bool:
+    return host == "youtube.com" or host.endswith(".youtube.com")
 
 
 def format_transcript(transcript: List[Dict]) -> str:
@@ -54,6 +91,7 @@ def chunk_transcript(transcript: List[Dict], max_chars: int = 2800) -> List[Dict
     for item in transcript:
         sentence = _transcript_field(item, "text").replace("\n", " ")
         start = int(_transcript_field(item, "start"))
+        duration = float(_transcript_field_or_default(item, "duration", 0))
         token = f"[{start // 60:02d}:{start % 60:02d}] {sentence}"
         if current_length + len(token) > max_chars and current_text:
             chunks.append({
@@ -66,7 +104,7 @@ def chunk_transcript(transcript: List[Dict], max_chars: int = 2800) -> List[Dict
             current_start = start
         current_text.append(token)
         current_length += len(token)
-        current_end = start
+        current_end = int(start + duration)
 
     if current_text:
         chunks.append({
@@ -179,6 +217,10 @@ def _get_embedding(text: str, model: str = "nomic-embed-text") -> List[float]:
         raise RuntimeError(f"Embedding request failed: {e}")
 
 
+def build_chunk_embeddings(chunks: List[Dict], model: str = "nomic-embed-text") -> List[List[float]]:
+    return [_get_embedding(chunk["text"], model=model) for chunk in chunks]
+
+
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
     import numpy as np
     a, b = np.array(a), np.array(b)
@@ -188,19 +230,32 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def select_context_chunks(chunks: List[Dict], question: str, top_k: int = 3) -> List[Dict]:
+def select_context_chunks(
+    chunks: List[Dict],
+    question: str,
+    top_k: int = 3,
+    chunk_embeddings: Optional[List[List[float]]] = None,
+) -> List[Dict]:
     question_embedding = _get_embedding(question)
+    if chunk_embeddings is None or len(chunk_embeddings) != len(chunks):
+        chunk_embeddings = build_chunk_embeddings(chunks)
+
     scored = []
-    for chunk in chunks:
-        chunk_embedding = _get_embedding(chunk["text"])
+    for chunk, chunk_embedding in zip(chunks, chunk_embeddings):
         score = _cosine_similarity(question_embedding, chunk_embedding)
         scored.append((score, chunk))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [chunk for score, chunk in scored[:top_k]]
 
 
-def answer_question(question: str, transcript_chunks: List[Dict], chapter_summaries: List[Dict], model: str = "llama3.2:3b") -> str:
-    context_chunks = select_context_chunks(transcript_chunks, question)
+def answer_question(
+    question: str,
+    transcript_chunks: List[Dict],
+    chapter_summaries: List[Dict],
+    model: str = "llama3.2:3b",
+    chunk_embeddings: Optional[List[List[float]]] = None,
+) -> str:
+    context_chunks = select_context_chunks(transcript_chunks, question, chunk_embeddings=chunk_embeddings)
     context_text = "\n\n".join([c["text"] for c in context_chunks])
     chapters_summary = "\n\n".join([f"{c['title']}: {c['summary']}" for c in chapter_summaries])
     prompt = textwrap.dedent(

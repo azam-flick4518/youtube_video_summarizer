@@ -1,10 +1,10 @@
 # YouTube Video Summarizer + Q&A
 
-A Streamlit app that converts any YouTube URL into chapter-by-chapter summaries, key takeaways, and an interactive Q&A assistant — fully local, no API costs.
+A Streamlit app that converts a YouTube URL into chapter-by-chapter summaries, key takeaways, and an interactive Q&A assistant. It runs fully local with Ollama, so there are no API costs.
 
 ## Project Structure
 
-```
+```text
 README.md              # This file
 requirements.txt       # Python dependencies
 streamlit_app.py       # Streamlit UI layer
@@ -13,15 +13,16 @@ video_summarizer.py    # Core pipeline: transcript extraction, chunking, summari
 
 ## Screenshots
 
-![App demo](assets/screenshot.png)
+![App demo](assets/local_execution_1.png)
+![App demo with results](assets/local_execution_2.png)
 
 ## Tech Stack
 
-- `youtube-transcript-api` — free transcript extraction, no YouTube API key required
-- `llama3.2:3b` via Ollama — local LLM for summarization and Q&A
-- `nomic-embed-text` via Ollama — local embeddings for semantic chunk retrieval
-- `numpy` — cosine similarity scoring
-- Streamlit — UI layer
+- `youtube-transcript-api` - free transcript extraction, no YouTube API key required
+- `llama3.2:3b` via Ollama - local LLM for summarization and Q&A
+- `nomic-embed-text` via Ollama - local embeddings for semantic chunk retrieval
+- `numpy` - cosine similarity scoring
+- Streamlit - UI layer
 
 ---
 
@@ -29,65 +30,52 @@ video_summarizer.py    # Core pipeline: transcript extraction, chunking, summari
 
 ### Pipeline overview
 
-```
+```text
 YouTube URL
-    │
-    ▼
-extract_video_id()         # regex-based ID parsing, handles full URLs + short URLs + raw IDs
-    │
-    ▼
-load_transcript()          # youtube-transcript-api, English variants with graceful error handling
-    │
-    ▼
-chunk_transcript()         # character-budget chunking (~2800 chars), preserves timestamps
-    │
-    ▼
-summarize_transcript()     # per-chunk LLM call → title + summary extraction via regex
-    │
-    ▼
-build_takeaways()          # single LLM call over all chapter summaries → takeaways + suggested questions
-    │
-    ▼
-Streamlit UI               # tabs: Summary / Takeaways / Q&A / Transcript
-    │
-    ▼ (on user question)
-select_context_chunks()    # semantic retrieval via nomic-embed-text + cosine similarity
-    │
-    ▼
-answer_question()          # LLM call grounded on top-k chunks + chapter summaries
+  -> extract_video_id()       # URL parsing for full URLs, shorts, embeds, short links, and raw IDs
+  -> load_transcript()        # youtube-transcript-api, English variants with graceful error handling
+  -> chunk_transcript()       # character-budget chunking, preserves timestamps
+  -> summarize_transcript()   # per-chunk LLM call for title + summary
+  -> build_chunk_embeddings() # cached once per loaded video for faster Q&A
+  -> build_takeaways()        # takeaways + suggested questions from chapter summaries
+  -> Streamlit UI             # tabs: Summary / Takeaways / Q&A / Transcript
+
+On user question:
+  -> select_context_chunks()  # semantic retrieval using cached chunk embeddings
+  -> answer_question()        # grounded answer from top-k transcript chunks + chapter summaries
 ```
 
 ### Key design decisions
 
 **Character-budget chunking over token counting**
 
-Chunking uses a `max_chars=2800` budget rather than token counting. This avoids a tokenizer dependency while staying well within `llama3.2:3b`'s context window. The tradeoff is slight imprecision at chunk boundaries, which is acceptable given the summarization task doesn't require exact sentence alignment.
+Chunking uses a `max_chars=2800` budget rather than token counting. This avoids a tokenizer dependency while staying well within `llama3.2:3b`'s context window. The tradeoff is slight imprecision at chunk boundaries, which is acceptable for this summarization task.
 
 **Per-chunk summarization, not full-transcript summarization**
 
-The transcript is summarized chunk-by-chunk rather than feeding the full transcript in one shot. This handles videos of any length without hitting context limits, and produces chapter-level granularity that maps naturally to how people navigate video content. The cost is N sequential LLM calls instead of one — acceptable for a local model with no API cost.
+The transcript is summarized chunk-by-chunk instead of feeding the full transcript in one shot. This handles longer videos without hitting context limits and produces chapter-level granularity that maps naturally to how people navigate video content.
 
-**Semantic retrieval for Q&A over keyword matching**
+**Cached semantic retrieval for Q&A**
 
-Q&A retrieval uses `nomic-embed-text` embeddings + cosine similarity instead of keyword overlap scoring. This handles questions phrased differently from the transcript language (synonyms, paraphrasing) and is consistent with the embedding-based approach used in production RAG systems. The tradeoff is N+1 Ollama calls per question (one per chunk + one for the query) versus instant keyword scoring. For typical videos with 10-30 chunks this adds ~5-10 seconds of latency — acceptable given it runs fully locally.
+Q&A retrieval uses `nomic-embed-text` embeddings and cosine similarity instead of keyword overlap. Chunk embeddings are built once after loading a video and reused for every question, so follow-up questions only need one new query embedding before answer generation.
 
 **Two-stage context for Q&A**
 
-`answer_question()` passes both the top-k raw transcript chunks and the full set of chapter summaries to the LLM. Raw chunks give precise grounded context; chapter summaries give broader video-level context for questions that span multiple sections. This reduces the chance of the model answering outside the video content.
+`answer_question()` passes both the top-k raw transcript chunks and the chapter summaries to the LLM. Raw chunks give precise grounded context, while chapter summaries provide broader video-level context for questions that span multiple sections.
 
 **No FAISS for single-video use**
 
-The RAG chatbot in this portfolio uses FAISS for persistent multi-document indexing. This project deliberately omits FAISS because the scope is a single video per session — in-memory cosine similarity over 10-30 chunks has negligible performance difference versus an indexed store, and removes a dependency. If this were extended to a multi-video library, FAISS or a vector DB would be the right addition.
+This project deliberately omits FAISS because the scope is a single video per session. In-memory cosine similarity over typical video chunks is enough here. For a multi-video library, FAISS or a vector database would be the right addition.
 
 **Ollama REST API over subprocess**
 
-LLM calls use `requests.post` to Ollama's local REST API rather than shelling out via `subprocess`. This gives structured JSON responses, proper timeout control, and cleaner error propagation — more aligned with how production systems call model inference endpoints.
+LLM calls use `requests.post` to Ollama's local REST API rather than shelling out. This gives structured JSON responses, timeout control, and cleaner error propagation.
 
 ### Known limitations
 
-- **No auto-caption fallback** — if English transcripts are unavailable, the app errors rather than falling back to auto-generated captions. This is a known gap.
-- **Video title not fetched** — the app uses the video ID as an internal identifier. Fetching the actual title would require the YouTube Data API or HTML scraping.
-- **Sequential chunk summarization** — chapters are summarized one at a time. Parallelising with `concurrent.futures` would reduce load time significantly for long videos.
+- **No auto-caption fallback** - if English transcripts are unavailable, the app errors rather than falling back to auto-generated captions.
+- **Video title not fetched** - the app uses the video ID as an internal identifier. Fetching the actual title would require the YouTube Data API or HTML scraping.
+- **Sequential chunk summarization** - chapters are summarized one at a time. Parallelizing with `concurrent.futures` would reduce load time for long videos.
 
 ---
 
@@ -97,8 +85,9 @@ LLM calls use `requests.post` to Ollama's local REST API rather than shelling ou
 2. Pull the transcript from YouTube.
 3. Split the transcript into character-budget chunks with timestamps preserved.
 4. Summarize each chunk independently via Ollama to generate chapter titles and summaries.
-5. Run a second LLM pass over all chapter summaries to extract key takeaways and suggested questions.
-6. On user questions, embed the query and all chunks via `nomic-embed-text`, score by cosine similarity, retrieve top-k chunks, and generate a grounded answer.
+5. Cache one embedding per transcript chunk for faster Q&A.
+6. Run a second LLM pass over all chapter summaries to extract key takeaways and suggested questions.
+7. On user questions, embed the query, score it against cached chunk embeddings, retrieve top-k chunks, and generate a grounded answer.
 
 ## Run Locally
 
@@ -122,7 +111,7 @@ LLM calls use `requests.post` to Ollama's local REST API rather than shelling ou
 
 4. Open in browser:
 
-   ```
+   ```text
    http://localhost:8501
    ```
 
@@ -145,6 +134,6 @@ The app calls Ollama at `http://localhost:11434`.
 
 ## Notes
 
-- No OpenAI API key required — fully local inference.
+- No OpenAI API key required - fully local inference.
 - Designed for single-video sessions; no persistent vector store.
 - For multi-video or library-scale use, FAISS indexing would be the natural extension.
